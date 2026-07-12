@@ -11,8 +11,8 @@ approval notifications without seeing implementation commands.
 1. The user installs the skill once.
 2. The user says `@approval-notifier set up Telegram notifications` in Codex.
 3. Codex invokes the bundled helper.
-4. The helper asks for the BotFather token in a masked local terminal prompt.
-5. The helper shows a fresh `/start` code. The user sends it in a private chat
+4. The helper opens a temporary loopback-only setup page in the user's browser.
+5. The page shows a fresh `/start` code. The user sends it in a private chat
    with their bot.
 6. The helper records only the bot token and paired chat ID in a mode-600 local
    file. Future approval notices go to that chat.
@@ -22,8 +22,9 @@ The user does not run Python, find local paths, or edit configuration files.
 ## Package shape
 
 - `SKILL.md` gives Codex the setup and approval-notification rules.
-- `bin/notifier.mjs` is a zero-dependency Node helper. It has `setup`,
-  `status`, `send`, and `dry-run` commands.
+- `bin/notifier.mjs` is a zero-dependency Node helper. Setup uses a temporary
+  loopback-only browser page; it also has `status`, `send`, and `dry-run`
+  commands.
 - `package.json` makes the helper available to package runners, but ordinary
   users use the skill through Codex.
 - `tests/` covers notice formatting, secret redaction, duplicate suppression,

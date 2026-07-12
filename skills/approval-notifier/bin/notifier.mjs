@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes as nodeRandomBytes } from "node:crypto";
+import { createServer } from "node:http";
 import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
+import { spawn } from "node:child_process";
 
 const DEDUPE_MS = 30 * 60 * 1000;
 const TOKEN_PATTERN = /\b\d{5,12}:[A-Za-z0-9_-]{20,}\b/g;
@@ -180,6 +182,190 @@ export async function setupConfig({
   throw new PairingError("notifier_private_start_not_received");
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function setupPage({ sessionPath, state, pairingCode, error }) {
+  const body = state === "enter-token"
+    ? `
+      <h1>Connect Telegram</h1>
+      <p>Paste the BotFather token for the bot that will send approval notices.</p>
+      <form method="post" action="${sessionPath}">
+        <label>BotFather token <input name="token" type="password" autocomplete="off" autofocus required></label>
+        <button type="submit">Continue</button>
+      </form>`
+    : state === "waiting"
+      ? `
+        <meta http-equiv="refresh" content="2">
+        <h1>Pair your Telegram chat</h1>
+        <p>Send this exact message to the bot in a private Telegram chat:</p>
+        <pre>${escapeHtml(pairingCode)}</pre>
+        <p>Waiting for that private message.</p>`
+      : state === "complete"
+        ? `<h1>Telegram connected</h1><p>You can close this page.</p>`
+        : `
+          <h1>Setup did not complete</h1>
+          <p>${escapeHtml(error ?? "Try again.")}</p>
+          <p><a href="${sessionPath}">Start again</a></p>`;
+  return `<!doctype html>
+  <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Notifier setup</title><style>
+  body{font:16px system-ui,sans-serif;line-height:1.5;max-width:40rem;margin:10vh auto;padding:0 1.25rem;color:#151515}
+  input{display:block;width:100%;box-sizing:border-box;margin:.5rem 0 1rem;padding:.7rem;font:inherit}
+  button{padding:.7rem 1rem;font:inherit}pre{padding:.8rem;background:#f3f3f3;overflow:auto}
+  </style></head><body>${body}</body></html>`;
+}
+
+function readRequestBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 8192) reject(new PairingError("notifier_setup_request_too_large"));
+    });
+    request.once("end", () => resolve(body));
+    request.once("error", reject);
+  });
+}
+
+function openLocalBrowser(url) {
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.unref();
+}
+
+export async function startBrowserSetup({
+  configPath,
+  request,
+  randomBytes = nodeRandomBytes,
+  openBrowser = openLocalBrowser,
+  pollIntervalMs = 2000,
+  timeoutMs = 5 * 60 * 1000,
+}) {
+  try {
+    await stat(configPath);
+    throw new ConfigError("notifier_already_configured");
+  } catch (error) {
+    if (error instanceof ConfigError) throw error;
+  }
+  const sessionPath = `/setup/${randomBytes(16).toString("hex")}`;
+  let state = "enter-token";
+  let pairingCode = "";
+  let error;
+  let baseline = 0;
+  let polling = false;
+  let pollTimer;
+  let timeoutTimer;
+  let resolveDone;
+  let rejectDone;
+  const done = new Promise((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+  const close = () => {
+    clearInterval(pollTimer);
+    clearTimeout(timeoutTimer);
+    server.close();
+  };
+  const complete = async (chatId, token) => {
+    await writePrivateJson(configPath, { version: 1, token, chatId });
+    state = "complete";
+    close();
+    resolveDone(configPath);
+  };
+  const poll = async (token) => {
+    if (polling || state !== "waiting") return;
+    polling = true;
+    try {
+      const response = await request(token, "getUpdates", {
+        offset: baseline + 1,
+        timeout: 0,
+        limit: 10,
+      });
+      if (!Array.isArray(response?.result)) throw new PairingError("notifier_pairing_failed");
+      const chatId = matchedPrivateStart(response.result, pairingCode.slice(7), baseline);
+      if (chatId !== undefined) {
+        await complete(chatId, token);
+        return;
+      }
+      baseline = Math.max(baseline, maxUpdateId(response.result));
+    } catch (caught) {
+      state = "failed";
+      error = "Telegram could not confirm pairing. Start setup again.";
+      close();
+      rejectDone(caught instanceof Error ? caught : new PairingError("notifier_pairing_failed"));
+    } finally {
+      polling = false;
+    }
+  };
+  const beginPairing = async (token) => {
+    if (!token || /\s/.test(token)) throw new PairingError("notifier_token_invalid");
+    await request(token, "getMe", {});
+    const initial = await request(token, "getUpdates", { timeout: 0, limit: 100 });
+    if (!Array.isArray(initial?.result)) throw new PairingError("notifier_pairing_failed");
+    baseline = maxUpdateId(initial.result);
+    pairingCode = `/start ${randomBytes(16).toString("hex")}`;
+    state = "waiting";
+    pollTimer = setInterval(() => void poll(token), pollIntervalMs);
+  };
+  const server = createServer(async (requestObject, response) => {
+    const requestUrl = new URL(requestObject.url ?? "/", "http://127.0.0.1");
+    if (requestUrl.pathname !== sessionPath) {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+    if (requestObject.method === "POST") {
+      try {
+        const body = await readRequestBody(requestObject);
+        const token = new URLSearchParams(body).get("token")?.trim() ?? "";
+        await beginPairing(token);
+      } catch {
+        state = "failed";
+        error = "The token could not be verified. Start setup again.";
+      }
+    }
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+      "cache-control": "no-store",
+    });
+    response.end(setupPage({ sessionPath, state, pairingCode, error }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    close();
+    throw new PairingError("notifier_setup_server_failed");
+  }
+  const url = `http://127.0.0.1:${address.port}${sessionPath}`;
+  timeoutTimer = setTimeout(() => {
+    if (state === "waiting" || state === "enter-token") {
+      state = "failed";
+      error = "The setup window expired. Start setup again.";
+      close();
+      rejectDone(new PairingError("notifier_setup_expired"));
+    }
+  }, timeoutMs);
+  try {
+    await openBrowser(url);
+  } catch {
+    close();
+    throw new PairingError("notifier_browser_open_failed");
+  }
+  return { url, done, close };
+}
+
 async function readState(path, now) {
   try {
     await requirePrivateFile(path, "notifier_state_missing");
@@ -265,49 +451,6 @@ function parseNotice(argv) {
   };
 }
 
-async function terminalQuestion(prompt, { hidden = false } = {}) {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) throw new PairingError("notifier_setup_requires_terminal");
-  if (!hidden) {
-    process.stdout.write(prompt);
-    return new Promise((resolve) => {
-      process.stdin.once("data", (data) => resolve(String(data).trim()));
-      process.stdin.resume();
-    });
-  }
-  process.stdout.write(prompt);
-  process.stdin.setEncoding("utf8");
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  return new Promise((resolve, reject) => {
-    let value = "";
-    const finish = () => {
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
-      process.stdout.write("\n");
-      resolve(value);
-    };
-    process.stdin.once("data", (data) => {
-      for (const character of data) {
-        if (character === "\u0003") {
-          process.stdin.setRawMode(false);
-          process.stdin.pause();
-          reject(new PairingError("notifier_setup_cancelled"));
-          return;
-        }
-        if (character === "\r" || character === "\n") {
-          finish();
-          return;
-        }
-        if (character === "\u007f") {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += character;
-      }
-    });
-  });
-}
-
 export async function run(argv, dependencies = {}) {
   const [command, ...rest] = argv;
   const { configPath, statePath } = defaultPaths(dependencies.home);
@@ -326,12 +469,16 @@ export async function run(argv, dependencies = {}) {
       return 0;
     }
     if (command === "setup") {
-      await setupConfig({
+      const session = await startBrowserSetup({
         configPath,
         request,
-        promptSecret: dependencies.promptSecret ?? ((prompt) => terminalQuestion(prompt, { hidden: true })),
-        promptContinue: dependencies.promptContinue ?? terminalQuestion,
+        randomBytes: dependencies.randomBytes,
+        openBrowser: dependencies.openBrowser,
+        pollIntervalMs: dependencies.pollIntervalMs,
+        timeoutMs: dependencies.timeoutMs,
       });
+      print("local_setup_opened");
+      await session.done;
       print("configured=true");
       return 0;
     }

@@ -11,10 +11,10 @@ When the user asks to set up Telegram notifications:
 
 1. Find this skill's directory and run its bundled `bin/notifier.mjs setup`
    helper with Node.
-2. The helper prompts for the BotFather token in a masked local terminal prompt.
-   Do not ask the user to paste a token into chat.
-3. The helper gives the user a fresh `/start` code to send in a private chat
-   with the bot.
+2. The helper opens a local setup page in the user's browser. Do not ask the
+   user to paste a token into chat or a terminal.
+3. The local setup page gives the user a fresh `/start` code to send in a
+   private chat with the bot.
 4. Report only that setup succeeded or the safe error code. Never expose a
    token, chat ID, or secret value.
 

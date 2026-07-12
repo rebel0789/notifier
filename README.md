@@ -21,9 +21,10 @@ Create a bot with [@BotFather](https://t.me/BotFather), then tell Codex:
 @approval-notifier set up Telegram notifications
 ```
 
-Codex starts a local setup prompt. Enter the BotFather token there, not in
-chat. It gives you a one-time `/start` code. Send that code to your bot in a
-private Telegram chat.
+Codex opens a local setup page in your browser. Enter the BotFather token
+there, not in chat. The page shows an exact pairing code such as
+`/start abc123`. Send that exact code to your bot in a private Telegram chat.
+The notifier accepts only that fresh code from the paired private chat.
 
 ## Use
 
@@ -41,7 +42,8 @@ Identical notices are limited to one every 30 minutes.
 - The bot token and paired chat ID stay in a private local file.
 - The repository contains no credentials.
 - Telegram is notification-only. It cannot approve, cancel, or trigger work.
-- Setup has no background service, webhook, or open local server.
+- Setup uses a temporary loopback-only page and closes it after pairing.
+- Setup has no background service or webhook.
 
 ## Remove
 

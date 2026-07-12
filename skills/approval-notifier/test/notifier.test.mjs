@@ -11,6 +11,7 @@ import {
   loadConfig,
   run,
   sendNotice,
+  startBrowserSetup,
   setupConfig,
 } from "../bin/notifier.mjs";
 
@@ -172,6 +173,53 @@ test("refuses pairing when the fresh private start message is absent", async () 
       }),
     PairingError,
   );
+});
+
+test("browser setup shows a fresh pairing code and only accepts its private chat", async () => {
+  const paths = await temporaryPaths();
+  let openedUrl;
+  const transport = fakeTransport([
+    { ok: true, result: { id: 1, is_bot: true } },
+    { ok: true, result: [{ update_id: 100 }] },
+    { ok: true, result: [] },
+    {
+      ok: true,
+      result: [
+        {
+          update_id: 101,
+          message: {
+            text: "/start aabb",
+            chat: { id: 42, type: "private" },
+            from: { id: 42 },
+          },
+        },
+      ],
+    },
+  ]);
+
+  const session = await startBrowserSetup({
+    configPath: paths.configPath,
+    request: transport.request,
+    randomBytes: () => Buffer.from("aabb", "hex"),
+    openBrowser: async (url) => {
+      openedUrl = url;
+    },
+    pollIntervalMs: 5,
+    timeoutMs: 500,
+  });
+
+  assert.match(openedUrl, /^http:\/\/127\.0\.0\.1:/);
+  const page = await fetch(openedUrl);
+  assert.equal(page.status, 200);
+  const pairing = await fetch(openedUrl, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: TEST_TOKEN }),
+  });
+
+  assert.match(await pairing.text(), /\/start aabb/);
+  await session.done;
+  assert.equal((await loadConfig(paths.configPath)).chatId, 42);
 });
 
 test("dry-run needs no configuration or Telegram request", async () => {

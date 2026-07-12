@@ -17,7 +17,7 @@ the repository.
 - Repository: public `rebel0789/notifier`, independent of Polychads.
 - Install command: `npx skills add rebel0789/notifier --skill approval-notifier -g -a codex`.
 - No npm publication, third-party packages, background process, webhook, or
-  Telegram-based authorization.
+  Telegram-based authorization. Setup may use a temporary loopback-only page.
 - No secret values in source, tests, README examples, command output, or Git.
 - Human copy stays direct and specific.
 
