@@ -211,7 +211,7 @@ function setupPage({ sessionPath, state, pairingCode, error }) {
         : `
           <h1>Setup did not complete</h1>
           <p>${escapeHtml(error ?? "Try again.")}</p>
-          <p><a href="${sessionPath}">Start again</a></p>`;
+          <p><a href="${sessionPath}?retry=1">Start again</a></p>`;
   return `<!doctype html>
   <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Notifier setup</title><style>
@@ -273,6 +273,7 @@ export async function startBrowserSetup({
     clearInterval(pollTimer);
     clearTimeout(timeoutTimer);
     server.close();
+    server.closeAllConnections?.();
   };
   const complete = async (chatId, token) => {
     await writePrivateJson(configPath, { version: 1, token, chatId });
@@ -299,8 +300,7 @@ export async function startBrowserSetup({
     } catch (caught) {
       state = "failed";
       error = "Telegram could not confirm pairing. Start setup again.";
-      close();
-      rejectDone(caught instanceof Error ? caught : new PairingError("notifier_pairing_failed"));
+      clearInterval(pollTimer);
     } finally {
       polling = false;
     }
@@ -322,14 +322,22 @@ export async function startBrowserSetup({
       response.end("Not found");
       return;
     }
+    if (requestObject.method === "GET" && requestUrl.searchParams.get("retry") === "1") {
+      clearInterval(pollTimer);
+      state = "enter-token";
+      pairingCode = "";
+      error = undefined;
+    }
     if (requestObject.method === "POST") {
       try {
         const body = await readRequestBody(requestObject);
         const token = new URLSearchParams(body).get("token")?.trim() ?? "";
         await beginPairing(token);
-      } catch {
+      } catch (caught) {
         state = "failed";
-        error = "The token could not be verified. Start setup again.";
+        error = caught instanceof DeliveryError && caught.message === "telegram_token_rejected"
+          ? "Telegram rejected this BotFather token. Generate a new token in BotFather and try again."
+          : "Telegram could not verify the token. Check your connection and try again.";
       }
     }
     response.writeHead(200, {
@@ -350,7 +358,7 @@ export async function startBrowserSetup({
   }
   const url = `http://127.0.0.1:${address.port}${sessionPath}`;
   timeoutTimer = setTimeout(() => {
-    if (state === "waiting" || state === "enter-token") {
+    if (state !== "complete") {
       state = "failed";
       error = "The setup window expired. Start setup again.";
       close();
@@ -421,6 +429,9 @@ async function telegramRequest(token, method, payload) {
     body = await response.json();
   } catch {
     throw new DeliveryError("telegram_delivery_failed");
+  }
+  if (response.status === 401 || body?.error_code === 401) {
+    throw new DeliveryError("telegram_token_rejected");
   }
   if (!response.ok || body?.ok !== true) throw new DeliveryError("telegram_delivery_failed");
   return body;

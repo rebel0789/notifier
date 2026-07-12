@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   ConfigError,
+  DeliveryError,
   PairingError,
   formatNotice,
   loadConfig,
@@ -220,6 +221,32 @@ test("browser setup shows a fresh pairing code and only accepts its private chat
   assert.match(await pairing.text(), /\/start aabb/);
   await session.done;
   assert.equal((await loadConfig(paths.configPath)).chatId, 42);
+});
+
+test("browser setup explains when Telegram rejects a bot token and offers retry", async () => {
+  const paths = await temporaryPaths();
+  let openedUrl;
+  const session = await startBrowserSetup({
+    configPath: paths.configPath,
+    request: async () => {
+      throw new DeliveryError("telegram_token_rejected");
+    },
+    openBrowser: async (url) => {
+      openedUrl = url;
+    },
+    timeoutMs: 500,
+  });
+
+  const response = await fetch(openedUrl, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: TEST_TOKEN }),
+  });
+  const page = await response.text();
+
+  assert.match(page, /Telegram rejected this BotFather token/);
+  assert.match(page, /retry=1/);
+  session.close();
 });
 
 test("dry-run needs no configuration or Telegram request", async () => {
