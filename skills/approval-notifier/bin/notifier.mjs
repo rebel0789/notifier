@@ -190,24 +190,44 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function setupPage({ sessionPath, state, pairingCode, error }) {
+function setupPage({ sessionPath, state, pairingCode, pairingNonce, botUsername, error }) {
+  const botLabel = botUsername ? `@${escapeHtml(botUsername)}` : "your bot";
+  const botLink = botUsername && pairingNonce
+    ? `https://t.me/${encodeURIComponent(botUsername)}?start=${encodeURIComponent(pairingNonce)}`
+    : "";
   const body = state === "enter-token"
     ? `
-      <h1>Connect Telegram</h1>
-      <p>Paste the BotFather token for the bot that will send approval notices.</p>
+      <p class="eyebrow">Notifier · one-time setup</p>
+      <h1>Connect your Telegram bot</h1>
+      <p class="lede">This bot sends approval notices. It cannot approve or run work.</p>
+      <ol>
+        <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a>.</li>
+        <li>Create a bot or open one you already own.</li>
+        <li>Copy its API token and paste it below.</li>
+      </ol>
       <form method="post" action="${sessionPath}">
-        <label>BotFather token <input name="token" type="password" autocomplete="off" autofocus required></label>
-        <button type="submit">Continue</button>
+        <label>Bot token <input name="token" type="password" autocomplete="off" autofocus required></label>
+        <button type="submit">Continue to pairing</button>
       </form>`
     : state === "waiting"
       ? `
         <meta http-equiv="refresh" content="2">
-        <h1>Pair your Telegram chat</h1>
-        <p>Send this exact message to the bot in a private Telegram chat:</p>
-        <pre>${escapeHtml(pairingCode)}</pre>
-        <p>Waiting for that private message.</p>`
+        <p class="eyebrow">Notifier · step 2 of 2</p>
+        <h1>Pair ${botLabel}</h1>
+        <p class="lede">Send this exact message in a private chat with ${botLabel}. This connects notifications to your Telegram account.</p>
+        <pre id="pairing-code">${escapeHtml(pairingCode)}</pre>
+        <div class="actions">
+          <button id="copy-message" type="button">Copy message</button>
+          ${botLink ? `<a class="button secondary" href="${botLink}" target="_blank" rel="noreferrer">Open ${botLabel}</a>` : ""}
+        </div>
+        <p class="status">Waiting for the exact code.</p>
+        <script>document.getElementById("copy-message").addEventListener("click",async()=>{const button=document.getElementById("copy-message");try{await navigator.clipboard.writeText(${JSON.stringify(pairingCode)});button.textContent="Copied";}catch{button.textContent="Copy the message above";}});</script>`
       : state === "complete"
-        ? `<h1>Telegram connected</h1><p>You can close this page.</p>`
+        ? `
+          <p class="eyebrow">Notifier · ready</p>
+          <h1>Connected to ${botLabel}</h1>
+          <p class="lede">Approval notices will be sent to this Telegram chat.</p>
+          <p class="status">This is a one-time setup. Run it again only if you change bots or want to pair a different Telegram chat.</p>`
         : `
           <h1>Setup did not complete</h1>
           <p>${escapeHtml(error ?? "Try again.")}</p>
@@ -215,9 +235,12 @@ function setupPage({ sessionPath, state, pairingCode, error }) {
   return `<!doctype html>
   <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Notifier setup</title><style>
-  body{font:16px system-ui,sans-serif;line-height:1.5;max-width:40rem;margin:10vh auto;padding:0 1.25rem;color:#151515}
-  input{display:block;width:100%;box-sizing:border-box;margin:.5rem 0 1rem;padding:.7rem;font:inherit}
-  button{padding:.7rem 1rem;font:inherit}pre{padding:.8rem;background:#f3f3f3;overflow:auto}
+  :root{color:#1b1c1f;background:#f7f7f4;font:16px/1.55 ui-sans-serif,system-ui,sans-serif}
+  body{max-width:40rem;margin:10vh auto;padding:0 1.25rem}h1{margin:.15rem 0 .65rem;font-size:clamp(2rem,6vw,3.5rem);line-height:1.03;letter-spacing:-.055em}
+  .eyebrow{margin:0 0 1rem;color:#5d6070;font-size:.78rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}.lede{font-size:1.1rem;color:#42444e}
+  ol{padding-left:1.25rem;color:#42444e}input{display:block;width:100%;box-sizing:border-box;margin:.5rem 0 1rem;padding:.75rem;border:1px solid #b9bac2;border-radius:.35rem;background:#fff;font:inherit}
+  button,.button{display:inline-block;box-sizing:border-box;padding:.7rem .95rem;border:1px solid #25262b;border-radius:.35rem;background:#25262b;color:#fff;font:inherit;font-weight:650;text-decoration:none;cursor:pointer}
+  .button.secondary{margin-left:.45rem;background:transparent;color:#25262b}.actions{margin:.9rem 0 1rem}pre{padding:.9rem 1rem;border:1px solid #dcddd9;border-radius:.35rem;background:#ecece8;overflow:auto;font-size:1rem}.status{color:#5d6070}
   </style></head><body>${body}</body></html>`;
 }
 
@@ -248,6 +271,7 @@ export async function startBrowserSetup({
   openBrowser = openLocalBrowser,
   pollIntervalMs = 2000,
   timeoutMs = 5 * 60 * 1000,
+  completionDelayMs = 4000,
 }) {
   try {
     await stat(configPath);
@@ -258,11 +282,14 @@ export async function startBrowserSetup({
   const sessionPath = `/setup/${randomBytes(16).toString("hex")}`;
   let state = "enter-token";
   let pairingCode = "";
+  let pairingNonce = "";
+  let botUsername;
   let error;
   let baseline = 0;
   let polling = false;
   let pollTimer;
   let timeoutTimer;
+  let completionTimer;
   let resolveDone;
   let rejectDone;
   const done = new Promise((resolve, reject) => {
@@ -272,14 +299,19 @@ export async function startBrowserSetup({
   const close = () => {
     clearInterval(pollTimer);
     clearTimeout(timeoutTimer);
+    clearTimeout(completionTimer);
     server.close();
     server.closeAllConnections?.();
   };
   const complete = async (chatId, token) => {
     await writePrivateJson(configPath, { version: 1, token, chatId });
     state = "complete";
-    close();
-    resolveDone(configPath);
+    clearInterval(pollTimer);
+    clearTimeout(timeoutTimer);
+    completionTimer = setTimeout(() => {
+      close();
+      resolveDone(configPath);
+    }, completionDelayMs);
   };
   const poll = async (token) => {
     if (polling || state !== "waiting") return;
@@ -307,11 +339,13 @@ export async function startBrowserSetup({
   };
   const beginPairing = async (token) => {
     if (!token || /\s/.test(token)) throw new PairingError("notifier_token_invalid");
-    await request(token, "getMe", {});
+    const identity = await request(token, "getMe", {});
     const initial = await request(token, "getUpdates", { timeout: 0, limit: 100 });
     if (!Array.isArray(initial?.result)) throw new PairingError("notifier_pairing_failed");
     baseline = maxUpdateId(initial.result);
-    pairingCode = `/start ${randomBytes(16).toString("hex")}`;
+    botUsername = typeof identity?.result?.username === "string" ? identity.result.username : undefined;
+    pairingNonce = randomBytes(16).toString("hex");
+    pairingCode = `/start ${pairingNonce}`;
     state = "waiting";
     pollTimer = setInterval(() => void poll(token), pollIntervalMs);
   };
@@ -326,6 +360,8 @@ export async function startBrowserSetup({
       clearInterval(pollTimer);
       state = "enter-token";
       pairingCode = "";
+      pairingNonce = "";
+      botUsername = undefined;
       error = undefined;
     }
     if (requestObject.method === "POST") {
@@ -342,10 +378,10 @@ export async function startBrowserSetup({
     }
     response.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
       "cache-control": "no-store",
     });
-    response.end(setupPage({ sessionPath, state, pairingCode, error }));
+    response.end(setupPage({ sessionPath, state, pairingCode, pairingNonce, botUsername, error }));
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);

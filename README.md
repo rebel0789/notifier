@@ -21,10 +21,15 @@ Create a bot with [@BotFather](https://t.me/BotFather), then tell Codex:
 @approval-notifier set up Telegram notifications
 ```
 
-Codex opens a local setup page in your browser. Enter the BotFather token
-there, not in chat. The page shows an exact pairing code such as
-`/start abc123`. Send that exact code to your bot in a private Telegram chat.
-The notifier accepts only that fresh code from the paired private chat.
+Codex opens a local setup page in your browser. It shows how to get a token
+from BotFather, gives you Copy and Open Telegram actions, and confirms the
+connected bot username. Enter the BotFather token there, not in chat. The page
+shows an exact pairing code such as `/start abc123`. Send that exact code to
+your bot in a private Telegram chat. The notifier accepts only that fresh code
+from the paired private chat.
+
+This is a one-time setup. Run it again only if you change bots or want to send
+notifications to a different Telegram chat.
 
 ## Use
 

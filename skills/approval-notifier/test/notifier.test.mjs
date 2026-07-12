@@ -115,7 +115,7 @@ test("rejects an insecure configuration file", async () => {
 test("pairs only a fresh private start message with the generated nonce", async () => {
   const paths = await temporaryPaths();
   const transport = fakeTransport([
-    { ok: true, result: { id: 1, is_bot: true } },
+    { ok: true, result: { id: 1, is_bot: true, username: "approval_notifier_bot" } },
     { ok: true, result: [{ update_id: 100 }] },
     {
       ok: true,
@@ -180,7 +180,7 @@ test("browser setup shows a fresh pairing code and only accepts its private chat
   const paths = await temporaryPaths();
   let openedUrl;
   const transport = fakeTransport([
-    { ok: true, result: { id: 1, is_bot: true } },
+    { ok: true, result: { id: 1, is_bot: true, username: "approval_notifier_bot" } },
     { ok: true, result: [{ update_id: 100 }] },
     { ok: true, result: [] },
     {
@@ -207,6 +207,7 @@ test("browser setup shows a fresh pairing code and only accepts its private chat
     },
     pollIntervalMs: 5,
     timeoutMs: 500,
+    completionDelayMs: 100,
   });
 
   assert.match(openedUrl, /^http:\/\/127\.0\.0\.1:/);
@@ -218,7 +219,14 @@ test("browser setup shows a fresh pairing code and only accepts its private chat
     body: new URLSearchParams({ token: TEST_TOKEN }),
   });
 
-  assert.match(await pairing.text(), /\/start aabb/);
+  const pairingPage = await pairing.text();
+  assert.match(pairingPage, /\/start aabb/);
+  assert.match(pairingPage, /Open @approval_notifier_bot/);
+  assert.match(pairingPage, /https:\/\/t\.me\/approval_notifier_bot\?start=aabb/);
+  assert.match(pairingPage, /Copy message/);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const successPage = await fetch(openedUrl);
+  assert.match(await successPage.text(), /Connected to @approval_notifier_bot/);
   await session.done;
   assert.equal((await loadConfig(paths.configPath)).chatId, 42);
 });

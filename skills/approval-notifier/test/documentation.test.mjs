@@ -22,6 +22,7 @@ test("README shows a global Skills CLI install and a natural-language setup requ
   assert.match(content, /@approval-notifier set up Telegram notifications/);
   assert.match(content, /local setup page/);
   assert.match(content, /exact pairing code/);
+  assert.match(content, /one-time setup/);
   assert.equal(content.includes("terminal prompt"), false);
   assert.equal(content.includes("Paste your token into this chat"), false);
 });
